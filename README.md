@@ -23,6 +23,8 @@ Starting from a set of uncalibrated images, a transformer-based geometry encoder
 ## Installation
 Our code relies on Python 3.10+, and is developed based on PyTorch 2.2.0 and CUDA 12.1, but it should work with other Pytorch/CUDA versions as well.
 
+> 使用 CUDA 11.8 进行复现，其他不变
+
 1. Clone AnySplat.
 ```bash
 git clone https://github.com/OpenRobotLab/AnySplat.git
@@ -33,7 +35,8 @@ cd AnySplat
 ```bash
 conda create -y -n anysplat python=3.10
 conda activate anysplat
-pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118
+pip install xformers==0.0.24 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 ```
 
