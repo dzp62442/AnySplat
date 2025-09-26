@@ -187,7 +187,6 @@ results*
 
 src/loss/depth_anything/*
 
-.vscode/
 .gradio/
 note.txt
 anysplat_ckpt*
