@@ -1,3 +1,13 @@
+在 OmniScene 数据集上与 SVF-GS 进行对比
+
+## 训练
+```bash
+python src/main.py +experiment=omniscene_112x200
+```
+
+
+
+
 # AnySplat: Feed-forward 3D Gaussian Splatting from Unconstrained Views
 
 [![Project Website](https://img.shields.io/badge/AnySplat-Website-4CAF50?logo=googlechrome&logoColor=white)](https://city-super.github.io/anysplat/)
