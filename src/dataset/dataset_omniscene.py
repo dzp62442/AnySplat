@@ -98,20 +98,20 @@ bins_dynamic_demo = ['scenee7ef871f77f44331aefdebc24ec034b7_bin010',
 
 @dataclass
 class DatasetOmniSceneCfg(DatasetCfgCommon):
-    name: Literal["omniscene"]
+    name: str
     roots: list[Path]
-    baseline_epsilon: float
+    baseline_min: float
+    baseline_max: float
     max_fov: float
     make_baseline_1: bool
     augment: bool
-    test_len: int
-    skip_bad_shape: bool = True
-    near: float = -1.0
-    far: float = -1.0
-    baseline_scale_bounds: bool = True
-    shuffle_val: bool = True
-    train_times_per_scene: int = 1
-    highres: bool = False
+    relative_pose: bool
+    skip_bad_shape: bool
+    avg_pose: bool
+    rescale_to_1cube: bool
+    intr_augment: bool
+    normalize_by_pts3d: bool
+    rescale_to_1cube: bool
 
 @dataclass
 class DatasetOmniSceneCfgWrapper:
@@ -121,6 +121,9 @@ class DatasetOmniScene(Dataset):
     cfg: DatasetOmniSceneCfg
     stage: Stage
     view_sampler: ViewSampler
+
+    near: float = 0.1
+    far: float = 100.0
 
     data_version: str = "interp_12Hz_trainval"
     #data_version: str = "v1.0-trainval"
@@ -155,12 +158,8 @@ class DatasetOmniScene(Dataset):
         self.cfg = cfg
         self.stage = stage
         self.view_sampler = view_sampler
-        if cfg.near != -1:
-            self.near = cfg.near
-        if cfg.far != -1:
-            self.far = cfg.far
 
-        self.reso = cfg.image_shape
+        self.reso = cfg.input_image_shape
         self.data_root = str(cfg.roots[0])
         self.load_rel_depth = load_rel_depth        
         
@@ -183,7 +182,8 @@ class DatasetOmniScene(Dataset):
     def __len__(self):
         return len(self.bin_tokens)
     
-    def __getitem__(self, index):
+    def __getitem__(self, index_tuple: tuple):
+        index, num_context_views, patchsize_w = index_tuple  #! 忽略 num_context_views 和 patchsize_w，使用全部视角
 
         bin_token = self.bin_tokens[index]
         with open(osp.join(self.data_root, self.data_version, "bin_infos_3.2m", bin_token + ".pkl"), "rb") as f:
@@ -240,6 +240,7 @@ class DatasetOmniScene(Dataset):
             "near": repeat(torch.tensor(self.near, dtype=torch.float32), "-> v", v=len(input_c2ws)),
             "far": repeat(torch.tensor(self.far, dtype=torch.float32), "-> v", v=len(input_c2ws)),
             "index": torch.arange(len(input_c2ws)),
+            "valid_mask": input_masks,
         }
 
         target = {
@@ -249,7 +250,7 @@ class DatasetOmniScene(Dataset):
             "near": repeat(torch.tensor(self.near, dtype=torch.float32), "-> v", v=len(output_c2ws)),
             "far": repeat(torch.tensor(self.far, dtype=torch.float32), "-> v", v=len(output_c2ws)),
             "index": torch.arange(len(output_c2ws)),
-            "masks": output_masks,
+            "valid_mask": output_masks,
         }
 
         return {

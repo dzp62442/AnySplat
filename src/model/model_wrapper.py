@@ -175,6 +175,7 @@ class ModelWrapper(LightningModule):
     def training_step(self, batch, batch_idx):
         # combine batch from different dataloaders
         # torch.cuda.empty_cache()
+        print(f'-------------------------- {batch_idx} --------------------------')
         if isinstance(batch, list):
             batch_combined = None
             for batch_per_dl in batch:

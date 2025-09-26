@@ -32,11 +32,15 @@ model:
     
 dataset:
   omniscene:
-    input_image_shape: [112, 200]
+    input_image_shape: [112, 196]
     avg_pose: false
     intr_augment: true
     normalize_by_pts3d: false
     rescale_to_1cube: false
+    view_sampler:
+      num_context_views: 6
+      num_target_views: 12
+      max_img_per_gpu: 6 # keep the same as num_context_views
 
 optimizer:
   lr: 2e-4
