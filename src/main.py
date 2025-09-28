@@ -14,6 +14,7 @@ from lightning.pytorch.plugins.environments import SLURMEnvironment
 from lightning.pytorch.strategies import DeepSpeedStrategy
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
+import safetensors
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -137,6 +138,18 @@ def train(cfg_dict: DictConfig):
         get_losses(cfg.loss),
         step_tracker
     )
+
+    # load full model
+    if cfg.checkpointing.pretrained_model is not None:
+        # 使用 from_pretrained 从本地加载模型
+        model_wrapper.model = model_wrapper.model.from_pretrained(
+            cfg.checkpointing.pretrained_model, 
+            local_files_only=True,
+            encoder_cfg=cfg.model.encoder,
+            decoder_cfg=cfg.model.decoder
+        )
+        print(cyan(f"Loaded pretrained weights: {cfg.checkpointing.pretrained_model}"))
+
     data_module = DataModule(
         cfg.dataset,
         cfg.data_loader,

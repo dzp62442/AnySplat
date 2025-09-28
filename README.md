@@ -2,7 +2,8 @@
 
 ## 训练
 ```bash
-python src/main.py +experiment=omniscene_112x200
+python src/main.py +experiment=omniscene_112x200 
+python src/main.py +experiment=omniscene_112x200 checkpointing.pretrained_model=pretrained/
 ```
 
 
