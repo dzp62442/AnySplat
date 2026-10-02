@@ -6,6 +6,16 @@ from jaxtyping import Float
 from lpips import LPIPS
 from skimage.metrics import structural_similarity
 from torch import Tensor
+from torchmetrics.functional.regression import pearson_corrcoef
+
+
+@torch.no_grad()
+def compute_pcc(ground_truth: Tensor, predicted: Tensor) -> Tensor:
+    """SVF-GS/DepthSplat: one Pearson coefficient over a whole bin/view group.
+
+    Functional form avoids retaining state across bins or view groups.
+    """
+    return pearson_corrcoef(ground_truth.reshape(-1), predicted.reshape(-1))
 
 
 @torch.no_grad()

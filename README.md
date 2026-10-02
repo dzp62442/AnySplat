@@ -1,3 +1,41 @@
+# OmniScene 实验（与 SVF-GS 对比）
+
+在 `anysplat` 环境中，从项目根目录运行。数据根目录为 `datasets/omniscene`，详细设置见 [OmniScene 数据集实验文档](<docs/OmniScene 数据集实验文档.md>)。
+
+### 训练
+
+```bash
+# 112×200
+CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_112x200
+
+# 224×400
+CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_224x400
+```
+
+默认训练 100001 步，batch size 为 1，W&B 离线。结果保存在 `work_dirs/<实验名>`，重复执行相同命令会自动续训。
+
+### 评估
+
+以下以 112×200 为例；评估 224×400 时，将命令中的所有 `112x200` 替换为 `224x400`。
+
+```bash
+# 自训模型：完整测试集
+CUDA_VISIBLE_DEVICES=0 python -m src.main \
+  +experiment=omniscene_112x200 mode=test test.split=total \
+  checkpointing.load=work_dirs/omniscene_112x200/checkpoints/final.ckpt \
+  hydra.run.dir=work_dirs/omniscene_112x200/eval/total
+
+# 作者预训练模型：直接评估，无需 OmniScene 训练
+CUDA_VISIBLE_DEVICES=0 python -m src.main \
+  +experiment=omniscene_112x200 mode=test test.split=total \
+  test.weights_source=author test.pretrained_path=pretrained \
+  hydra.run.dir=work_dirs/author_112x200/eval/total
+```
+
+评估 mini 集时，将 `test.split=total` 改为 `test.split=mini`，并将输出目录末尾的 `total` 改为 `mini`。评估会分别汇报 `all_18`、`novel_12` 的 PSNR、SSIM、LPIPS、PCC，以及参数量和完整重建耗时。
+
+---
+
 # AnySplat: Feed-forward 3D Gaussian Splatting from Unconstrained Views
 
 [![Project Website](https://img.shields.io/badge/AnySplat-Website-4CAF50?logo=googlechrome&logoColor=white)](https://city-super.github.io/anysplat/)

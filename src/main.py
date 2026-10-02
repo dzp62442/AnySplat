@@ -50,8 +50,16 @@ def cyan(text: str) -> str:
     config_name="main",
 )
 def train(cfg_dict: DictConfig):
+    if "omniscene" in cfg_dict.dataset:
+        output_dir = str(HydraConfig.get().runtime.output_dir)
+        cfg_dict.train.output_path = output_dir
+        cfg_dict.test.output_path = output_dir
+        OmegaConf.resolve(cfg_dict)
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
+    if "omniscene" in cfg_dict.dataset:
+        from src.omniscene import run_omniscene
+        return run_omniscene(cfg, cfg_dict, HydraConfig.get().runtime.output_dir)
     
     # Set up the output directory.
     output_dir = Path(

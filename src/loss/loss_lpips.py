@@ -50,8 +50,10 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
         if global_step < self.cfg.apply_after_step:
             return torch.tensor(0, dtype=torch.float32, device=image.device)
         
-        if self.cfg.mask or self.cfg.alpha or self.cfg.conf:
-            if self.cfg.mask:
+        if "rgb_loss_mask" in batch["context"] or self.cfg.mask or self.cfg.alpha or self.cfg.conf:
+            if "rgb_loss_mask" in batch["context"]:
+                mask = batch["context"]["rgb_loss_mask"]
+            elif self.cfg.mask:
                 mask = batch["context"]["valid_mask"]
             elif self.cfg.alpha:
                 mask = prediction.alpha

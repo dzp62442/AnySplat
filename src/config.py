@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional, Type, TypeVar
 
@@ -19,6 +19,9 @@ class CheckpointingCfg:
     every_n_train_steps: int
     save_top_k: int
     save_weights_only: bool
+    auto_resume: bool = False
+    init_source: str = "vggt"
+    save_last: bool = False
 
 
 @dataclass
@@ -35,6 +38,15 @@ class TrainerCfg:
     num_nodes: int = 1
     accumulate_grad_batches: int = 1
     precision: Literal["32", "16-mixed", "bf16-mixed"] = "32"
+    devices: int = 1
+    num_sanity_val_steps: int = 0
+
+
+@dataclass
+class NotificationsCfg:
+    feishu_enabled: bool = False
+    library_root: Path = Path.home() / "Libraries"
+    timeout_seconds: float = 10.0
 
 
 @dataclass
@@ -51,6 +63,7 @@ class RootCfg:
     test: TestCfg
     train: TrainCfg
     seed: int
+    notifications: NotificationsCfg = field(default_factory=NotificationsCfg)
 
 
 TYPE_HOOKS = {

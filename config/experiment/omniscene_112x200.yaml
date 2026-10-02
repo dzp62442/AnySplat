@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - omniscene_common
+  - _self_
+wandb:
+  name: omniscene_112x200
+  tags: [omniscene, 112x200, context_only]
+dataset:
+  omniscene:
+    input_image_shape: [112, 200]

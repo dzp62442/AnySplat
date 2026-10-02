@@ -164,6 +164,7 @@ cython_debug/
 
 # Outputs
 /outputs
+/work_dirs
 /lightning_logs
 /checkpoints
 

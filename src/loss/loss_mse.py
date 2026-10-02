@@ -33,6 +33,11 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
     ) -> Float[Tensor, ""]:
         # Get alpha and valid mask from inputs
         alpha = prediction.alpha
+        if "rgb_loss_mask" in batch["context"]:
+            mask = batch["context"]["rgb_loss_mask"].unsqueeze(2)
+            gt = (batch["context"]["image"] + 1) / 2
+            loss = ((prediction.color * mask - gt * mask) ** 2).mean()
+            return self.cfg.weight * torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
         # valid_mask = torch.ones_like(alpha, device=alpha.device).bool()
         valid_mask = batch['context']['valid_mask']
 

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import gc
 import random
@@ -81,6 +81,14 @@ class TestCfg:
     generate_video: bool
     mode: Literal["inference", "evaluation"]
     image_folder: str
+    split: Literal["mini", "total"] = "total"
+    weights_source: Literal["training", "author"] = "training"
+    pretrained_path: Path = Path("pretrained")
+    camera_alignment: str = "input_sim3"
+    view_groups: list[str] = field(default_factory=lambda: ["all_18", "novel_12", "input_6"])
+    compute_pcc: bool = True
+    eval_time_skip_steps: int = 5
+    limit_batches: int | None = None  # Explicit debug cap; summaries remain partial.
 
 
 @dataclass
@@ -99,6 +107,10 @@ class TrainCfg:
     weight_normal: float = 1.0
     render_ba: bool = False
     render_ba_after_step: int = 0
+    supervision_views: str = "context"
+    use_dynamic_mask: bool = False
+    eval_model_every_n_val: int = 10
+    final_mini_test: bool = True
 
 
 @runtime_checkable

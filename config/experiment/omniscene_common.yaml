@@ -1,0 +1,104 @@
+# @package _global_
+# AnySplat multi-dataset model/loss/optimizer settings; a single OmniScene dataset.
+defaults:
+  - /dataset@_group_.omniscene: omniscene
+  - override /model/encoder: anysplat
+  - override /model/encoder/backbone: croco
+  - override /loss: [mse, lpips, depth_consis]
+
+wandb:
+  project: anysplat-omniscene
+  mode: offline
+
+model:
+  encoder:
+    gs_params_head_type: dpt_gs
+    pose_free: true
+    pretrained_weights: ''
+    voxel_size: 0.002
+    pred_pose: true
+    anchor_feat_dim: 128
+    gs_prune: false
+    pred_head_type: depth
+    freeze_backbone: false
+    distill: true
+    render_conf: false
+    conf_threshold: 0.1
+    freeze_module: patch_embed
+    voxelize: true
+    intermediate_layer_idx: [4, 11, 17, 23]
+    initialize_from_vggt: true
+    vggt_pretrained_path: facebook/VGGT-1B
+    local_files_only: true
+    verbose: false
+
+optimizer:
+  lr: 2.0e-4
+  warm_up_steps: 1000
+  backbone_lr_multiplier: 0.1
+
+data_loader:
+  train: {batch_size: 1, num_workers: 16, persistent_workers: true, seed: 1234}
+  val: {batch_size: 1, num_workers: 1, persistent_workers: true, seed: 3456}
+  test: {batch_size: 1, num_workers: 4, persistent_workers: false, seed: 2345}
+
+trainer:
+  max_steps: 100_001
+  val_check_interval: 1000
+  num_nodes: 1
+  devices: 1
+  accumulate_grad_batches: 1
+  precision: bf16-mixed
+  gradient_clip_val: 0.5
+  num_sanity_val_steps: 0
+
+checkpointing:
+  load: null
+  auto_resume: true
+  init_source: vggt
+  every_n_train_steps: 200
+  save_top_k: 5
+  save_weights_only: false
+  save_last: true
+
+train:
+  supervision_views: context
+  use_dynamic_mask: true
+  eval_model_every_n_val: 10
+  final_mini_test: true
+  pose_loss_alpha: 1.0
+  pose_loss_delta: 1.0
+  cxt_depth_weight: 0.0
+  weight_pose: 10.0
+  weight_depth: 0.0
+  weight_normal: 0.0
+
+loss:
+  mse: {weight: 1.0, conf: false}
+  lpips: {weight: 0.05, apply_after_step: 0, conf: false}
+  depth_consis: {weight: 0.1, loss_type: MSE}
+
+test:
+  split: total
+  weights_source: training
+  pretrained_path: pretrained
+  align_pose: false
+  camera_alignment: input_sim3
+  view_groups: [all_18, novel_12, input_6]
+  compute_scores: true
+  compute_pcc: true
+  eval_time_skip_steps: 5
+  limit_batches: null
+  save_image: false
+  save_video: false
+  save_compare: false
+  generate_video: false
+
+notifications:
+  feishu_enabled: true
+  library_root: ${oc.env:HOME}/Libraries
+  timeout_seconds: 10.0
+
+hydra:
+  run:
+    dir: work_dirs/${wandb.name}

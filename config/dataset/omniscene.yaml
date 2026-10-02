@@ -1,0 +1,9 @@
+name: omniscene
+roots: [datasets/omniscene]
+data_version: interp_12Hz_trainval
+dataset_prefix: /datasets/nuScenes
+input_image_shape: [112, 200]
+num_context_views: 6
+load_metric_depth: false
+load_dynamic_mask: true
+patch_size: 14

@@ -114,6 +114,10 @@ class EncoderAnySplatCfg:
     conf_threshold: float = 0.1
     intermediate_layer_idx: Optional[List[int]] = None
     voxelize: bool = False
+    initialize_from_vggt: bool = True
+    vggt_pretrained_path: str = "facebook/VGGT-1B"
+    local_files_only: bool = False
+    verbose: bool = True
 
 
 def rearrange_head(feat, patch_size, H, W):
@@ -130,7 +134,10 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
 
     def __init__(self, cfg: EncoderAnySplatCfg) -> None:
         super().__init__(cfg)
-        model_full = VGGT.from_pretrained("facebook/VGGT-1B")
+        model_full = (
+            VGGT.from_pretrained(cfg.vggt_pretrained_path, local_files_only=cfg.local_files_only)
+            if cfg.initialize_from_vggt else VGGT()
+        )
         # model_full = VGGT()
         self.aggregator = model_full.aggregator.to(torch.bfloat16)
         self.freeze_backbone = cfg.freeze_backbone
@@ -548,22 +555,15 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         infos["scene_scale"] = scene_scale
         infos["voxelize_ratio"] = densities.shape[1] / (h * w * v)
 
-        print(
-            f"scene scale: {scene_scale:.3f}, pixel-wise num: {h*w*v}, after voxelize: {neural_pts.shape[1]}, voxelize ratio: {infos['voxelize_ratio']:.3f}"
-        )
-        print(
-            f"Gaussians attributes: \n"
-            f"opacities: mean: {gaussians.opacities.mean()}, min: {gaussians.opacities.min()}, max: {gaussians.opacities.max()} \n"
-            f"scales: mean: {gaussians.scales.mean()}, min: {gaussians.scales.min()}, max: {gaussians.scales.max()}"
-        )
+        if self.cfg.verbose:
+            self._print_gaussian_stats(gaussians, scene_scale, h, w, v, b, neural_pts, infos)
 
-        print("B:", b, "V:", v, "H:", h, "W:", w)
         extrinsic_padding = (
             torch.tensor([0, 0, 0, 1], device=device, dtype=extrinsic.dtype)
             .view(1, 1, 1, 4)
             .repeat(b, v, 1, 1)
         )
-        intrinsic = intrinsic.clone()  # Create a new tensor
+        intrinsic = intrinsic.clone()
         intrinsic = torch.stack(
             [intrinsic[:, :, 0] / w, intrinsic[:, :, 1] / h, intrinsic[:, :, 2]], dim=2
         )
@@ -579,6 +579,19 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             infos=infos,
             distill_infos=distill_infos,
         )
+
+    @staticmethod
+    def _print_gaussian_stats(gaussians, scene_scale, h, w, v, b, neural_pts, infos):
+        print(
+            f"scene scale: {scene_scale:.3f}, pixel-wise num: {h*w*v}, after voxelize: {neural_pts.shape[1]}, voxelize ratio: {infos['voxelize_ratio']:.3f}"
+        )
+        print(
+            f"Gaussians attributes: \n"
+            f"opacities: mean: {gaussians.opacities.mean()}, min: {gaussians.opacities.min()}, max: {gaussians.opacities.max()} \n"
+            f"scales: mean: {gaussians.scales.mean()}, min: {gaussians.scales.min()}, max: {gaussians.scales.max()}"
+        )
+
+        print("B:", b, "V:", v, "H:", h, "W:", w)
 
     def get_data_shim(self) -> DataShim:
         def data_shim(batch: BatchedExample) -> BatchedExample:
