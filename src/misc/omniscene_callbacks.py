@@ -107,7 +107,7 @@ class OmniSceneProgress(Callback):
                 if value is not None:
                     logs[f"mini/{group}/{name}"] = value
             lines.append(group + ": " + ", ".join(fields))
-        lines.append(f"完整重建 ms/bin（不含 H2D、对齐、渲染和指标）：{timing['reconstruction_ms_per_bin']['mean_ms']}")
+        lines.append(f"完整重建 ms/bin（含已启用的输入相机规范化，不含 H2D、目标相机处理、渲染和指标）：{timing['reconstruction_ms_per_bin']['mean_ms']}")
         lines.append(f"含 H2D 的入口 ms/bin：{timing['reconstruction_with_transfer_ms_per_bin']['mean_ms']}")
         updates = step - self.start_step
         if updates > 0:

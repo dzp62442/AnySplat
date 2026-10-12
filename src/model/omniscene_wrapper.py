@@ -9,6 +9,7 @@ from ..dataset.shims.omniscene_shim import crop_batch
 from ..evaluation.metrics import compute_psnr
 from ..misc.omniscene_runtime import capture_rng, restore_rng
 from ..misc.image_io import save_image
+from ..misc.omniscene_visualization import save_reconstruction_diagnostics
 from .model_wrapper import ModelWrapper
 
 LOG = logging.getLogger(__name__)
@@ -34,7 +35,10 @@ class OmniSceneModelWrapper(ModelWrapper):
         if self.train_cfg.use_dynamic_mask:
             context["rgb_loss_mask"] = context["masks"]
         images = (context["image"] + 1) / 2
-        encoded, rendered = self.model(images, self.global_step)
+        camera_args = {}
+        if self.model.encoder.cfg.camera_source == "known":
+            camera_args["context_cameras"] = {k: context[k] for k in ("extrinsics", "intrinsics")}
+        encoded, rendered = self.model(images, self.global_step, **camera_args)
         batch["using_index"] = torch.arange(images.shape[1], device=images.device)
         depth = {**encoded.depth_dict, "distill_infos": encoded.distill_infos}
         total = images.new_zeros(())
@@ -58,6 +62,7 @@ class OmniSceneModelWrapper(ModelWrapper):
                                     torch.cat(tuple(rendered.color[0]), dim=-1)), dim=-2)
             path = self.train_cfg.output_path / "val" / f"step-{self.global_step:08d}" / f"{batch['scene'][0]}.png"
             save_image(comparison, path)
+            save_reconstruction_diagnostics(path.with_suffix(""), images, encoded, rendered)
         return total
 
     def training_step(self, batch, batch_idx):

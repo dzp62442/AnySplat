@@ -13,7 +13,9 @@ from PIL import Image
 
 from ..dataset.shims.omniscene_shim import crop_batch, crop_views
 from ..geometry.omniscene_alignment import align_input_cameras
+from ..geometry.omniscene_cameras import apply_camera_normalization, CAMERA_NORMALIZATION
 from ..misc.omniscene_runtime import capture_rng, parameter_counts, restore_rng, write_json
+from ..misc.omniscene_visualization import view_statistics
 from .metrics import compute_lpips, compute_pcc, compute_psnr, compute_ssim
 
 LOG = logging.getLogger(__name__)
@@ -44,15 +46,20 @@ def synchronize(device):
 
 
 @torch.no_grad()
-def reconstruct_timed(model, cpu_images, device, patch_size=14, global_step=0):
-    # This API receives CPU RGB directly; target data transfer is outside both timers.
+def reconstruct_timed(model, cpu_images, device, patch_size=14, global_step=0, *, cpu_cameras=None):
+    # Only reconstruction inputs enter the timers; targets never enter the encoder.
     synchronize(device)
     with_transfer_start = time.perf_counter()
-    images = cpu_images.to(device, non_blocking=True)
+    context = {"image": cpu_images.to(device, non_blocking=True)}
+    if cpu_cameras is not None:
+        context.update({k: cpu_cameras[k].to(device, non_blocking=True)
+                        for k in ("extrinsics", "intrinsics")})
     synchronize(device)
     reconstruction_start = time.perf_counter()
-    images = crop_views({"image": images}, patch_size)["image"]
-    result = model.encoder(images, global_step=global_step, visualization_dump=None)
+    context = crop_views(context, patch_size)
+    camera_args = ({"context_cameras": {k: context[k] for k in ("extrinsics", "intrinsics")}}
+                   if cpu_cameras is not None else {})
+    result = model.encoder(context["image"], global_step=global_step, visualization_dump=None, **camera_args)
     synchronize(device)
     end = time.perf_counter()
     return result, {"reconstruction_ms": (end - reconstruction_start) * 1000,
@@ -108,6 +115,8 @@ def evaluate_omniscene(model, loader, test_cfg, output_dir, *, step=0, metadata=
     groups = test_cfg.view_groups
     expected = len(loader.dataset)
     records, timings, alignments = [], [], []
+    diagnostics = []
+    known_cameras = model.encoder.cfg.camera_source == "known"
     processed = 0
     write_json(output_dir / "evaluation_summary.json", {"complete": False, "num_bins": 0, "expected_bins": expected})
     write_json(output_dir / "model_parameters.json", parameter_counts(model))
@@ -120,11 +129,17 @@ def evaluate_omniscene(model, loader, test_cfg, output_dir, *, step=0, metadata=
         for index, cpu_batch in enumerate(loader):
             if test_cfg.limit_batches is not None and index >= test_cfg.limit_batches:
                 break
-            result, timing = reconstruct_timed(model, cpu_batch["context"]["image"], device, patch_size, step)
+            result, timing = reconstruct_timed(model, cpu_batch["context"]["image"], device, patch_size, step,
+                                              cpu_cameras=cpu_batch["context"] if known_cameras else None)
             batch = crop_batch(cpu_batch, patch_size)
             context, target = batch["context"], batch["target"]
-            target_c2w, alignment = align_input_cameras(
-                result.pred_context_pose["extrinsic"], context["extrinsics"].to(device), target["extrinsics"].to(device))
+            if known_cameras:
+                target_c2w = apply_camera_normalization(target["extrinsics"].to(device), result.camera_transform)
+                alignment = [{"method": CAMERA_NORMALIZATION, "fallback": None,
+                              "scale": result.camera_transform["scale"][0].item()}]
+            else:
+                target_c2w, alignment = align_input_cameras(
+                    result.pred_context_pose["extrinsic"], context["extrinsics"].to(device), target["extrinsics"].to(device))
             token = batch["scene"][0]
             alignments.append({"bin_token": token, **alignment[0]})
             h, w = target["image"].shape[-2:]
@@ -145,6 +160,10 @@ def evaluate_omniscene(model, loader, test_cfg, output_dir, *, step=0, metadata=
                         records.append(row)
                         writer.writerow(row)
                     file.flush()
+            diagnostics.append({"bin_token": token,
+                                "depth_head": view_statistics(result.depth_dict["depth"][0].squeeze(-1)),
+                                "rendered_depth": view_statistics(rendered.depth[0]),
+                                "alpha": view_statistics(rendered.alpha[0])})
             if test_cfg.save_image:
                 folder = output_dir / "images" / token
                 folder.mkdir(parents=True, exist_ok=True)
@@ -163,7 +182,8 @@ def evaluate_omniscene(model, loader, test_cfg, output_dir, *, step=0, metadata=
         "warmup_bins": min(test_cfg.eval_time_skip_steps, processed),
         "device": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
         "gpu_isolation": "not_enforced; record external contention when reporting performance",
-        "boundary": "CPU RGB ready -> H2D -> GPU crop and complete student Gaussian reconstruction; synchronization at boundaries",
+        "boundary": ("CPU RGB and input K/c2w ready -> H2D -> GPU crop, input camera normalization and complete student Gaussian reconstruction"
+                     if known_cameras else "CPU RGB ready -> H2D -> GPU crop and complete student Gaussian reconstruction") + "; synchronization at boundaries",
         "excluded": ["data_loading", "teacher", "camera_alignment", "rendering", "metrics", "file_output"],
         "per_bin": timings,
     }
@@ -172,8 +192,11 @@ def evaluate_omniscene(model, loader, test_cfg, output_dir, *, step=0, metadata=
                "loaded_resolution": loader.dataset.cfg.input_image_shape,
                "effective_resolution": [x // patch_size * patch_size for x in loader.dataset.cfg.input_image_shape],
                "pixel_protocol": "full_center_crop", "depth_mode": "RGB+D",
-               "camera_alignment": "six_input_orientation_assisted_sim3", "groups": summarize_records(records, groups)}
+               "camera_source": model.encoder.cfg.camera_source,
+               "camera_alignment": CAMERA_NORMALIZATION if known_cameras else "six_input_orientation_assisted_sim3",
+               "groups": summarize_records(records, groups)}
     write_json(output_dir / "camera_alignment.json", alignments)
+    write_json(output_dir / "depth_diagnostics.json", diagnostics)
     write_json(output_dir / "reconstruction_time.json", time_summary)
     write_json(output_dir / "evaluation_summary.json", summary)
     LOG.info("Evaluation saved to %s: %s", output_dir, summary)

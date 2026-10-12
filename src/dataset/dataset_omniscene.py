@@ -1,6 +1,6 @@
 """OmniScene's existing six-center / twelve-novel camera protocol.
 
-Training intentionally does not read novel images, calibration or depth labels.
+Training reads only input images and, in the known-camera mode, input calibration.
 The manifest is trusted: no scene filtering or dataset quality audit takes place.
 """
 
@@ -33,6 +33,7 @@ class DatasetOmniSceneCfg:
     load_metric_depth: bool = False
     load_dynamic_mask: bool = True
     patch_size: int = 14
+    load_input_cameras: bool = False
 
 
 @dataclass
@@ -116,7 +117,7 @@ class DatasetOmniScene(Dataset):
         with (self.root / self.cfg.data_version / "bin_infos_3.2m" / f"{token}.pkl").open("rb") as f:
             info = pickle.load(f)["sensor_info"]
         context = self._views([info[cam][0] for cam in CAMERAS],
-                              input_view=True, calibration=self.stage == "test")
+                              input_view=True, calibration=self.stage == "test" or self.cfg.load_input_cameras)
         # This is the original loss API's "no external validity mask" sentinel.
         # It must NOT be replaced with the all-one dynamic RGB mask.
         context["valid_mask"] = torch.zeros_like(context["masks"], dtype=torch.bool)

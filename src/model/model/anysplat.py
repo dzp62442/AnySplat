@@ -96,15 +96,17 @@ class AnySplat(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     @torch.no_grad()
     def inference(self,
         context_image: torch.Tensor,
+        context_cameras: Optional[dict] = None,
     ):
         previous_distill = self.encoder.distill
         try:
             self.encoder.distill = False
-            encoder_output = self.encoder(context_image, global_step=0, visualization_dump=None)
+            encoder_output = self.encoder(context_image, global_step=0, visualization_dump=None,
+                                          context_cameras=context_cameras)
         finally:
             self.encoder.distill = previous_distill
-        gaussians, pred_context_pose = encoder_output.gaussians, encoder_output.pred_context_pose
-        return gaussians, pred_context_pose
+        render_pose = encoder_output.construction_pose or encoder_output.pred_context_pose
+        return encoder_output.gaussians, render_pose
     
     def forward(self, 
         context_image: torch.Tensor,
@@ -112,15 +114,18 @@ class AnySplat(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         visualization_dump: Optional[dict] = None,
         near: float = 0.01,
         far: float = 100.0,
+        context_cameras: Optional[dict] = None,
     ):
         b, v, c, h, w = context_image.shape
         device = context_image.device
-        encoder_output = self.encoder(context_image, global_step, visualization_dump=visualization_dump)
-        gaussians, pred_context_pose = encoder_output.gaussians, encoder_output.pred_context_pose
+        encoder_output = self.encoder(context_image, global_step, visualization_dump=visualization_dump,
+                                      context_cameras=context_cameras)
+        gaussians = encoder_output.gaussians
+        render_pose = encoder_output.construction_pose or encoder_output.pred_context_pose
         output = self.decoder.forward(
             gaussians,
-            pred_context_pose['extrinsic'],
-            pred_context_pose["intrinsic"],
+            render_pose['extrinsic'],
+            render_pose["intrinsic"],
             torch.ones(1, v, device=device) * near,
             torch.ones(1, v, device=device) * far,
             (h, w),

@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - omniscene_knowncam_common
+  - _self_
+wandb:
+  name: omniscene_knowncam_224x400
+  tags: [omniscene, 224x400, context_only, known_input_cameras]
+dataset:
+  omniscene:
+    input_image_shape: [224, 400]

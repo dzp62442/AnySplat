@@ -18,6 +18,9 @@ class EncoderOutput:
     depth_dict: dict | None
     infos: dict | None
     distill_infos: dict | None
+    # Keep actual construction cameras distinct from the network predictions.
+    construction_pose: dict | None = None
+    camera_transform: dict | None = None
 
 class Encoder(nn.Module, ABC, Generic[T]):
     cfg: T

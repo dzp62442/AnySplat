@@ -29,22 +29,26 @@ from src.dataset.shims.omniscene_shim import crop_batch, crop_views
 from src.evaluation.metrics import compute_pcc
 from src.evaluation.omniscene import evaluation_state, score_groups, summarize_records
 from src.geometry.omniscene_alignment import align_input_cameras
+from src.geometry.omniscene_cameras import normalize_input_cameras, apply_camera_normalization, pixel_intrinsics
 from src.global_cfg import set_cfg
 from src.loss.loss_distill import DistillLoss
 from src.misc.omniscene_callbacks import OmniSceneProgress
-from src.misc.omniscene_runtime import AtomicCheckpointIO, link_checkpoint, parameter_counts, resolve_resume
+from src.misc.omniscene_runtime import AtomicCheckpointIO, link_checkpoint, parameter_counts, resolve_resume, notify_feishu
 from src.model.omniscene_wrapper import OmniSceneModelWrapper
+from src.model.encoder.vggt.utils.geometry import batchify_unproject_depth_map_to_point_map
+from src.misc.omniscene_visualization import save_reconstruction_diagnostics
+from src.omniscene import experiment_protocol, validate_checkpoint_protocol, load_evaluation_model
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def configuration(resolution="112x200"):
+def configuration(resolution="112x200", known=False):
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "config")):
-        raw = compose(config_name="main", overrides=[f"+experiment=omniscene_{resolution}"])
+        raw = compose(config_name="main", overrides=[f"+experiment=omniscene_{'knowncam_' if known else ''}{resolution}"])
     return load_typed_root_config(raw), raw
 
 
-def make_data(root, *, targets=True):
+def make_data(root, *, targets=True, calibration=False):
     version = root / "interp_12Hz_trainval"
     (version / "bin_infos_3.2m").mkdir(parents=True)
     for split in ("train", "val"):
@@ -61,9 +65,10 @@ def make_data(root, *, targets=True):
             for kind in ("small", "param_small", "mask_small", "dpt_small"):
                 (root / f"samples_{kind}").mkdir(exist_ok=True)
             Image.fromarray(np.full((224, 400, 3), camera * 30 + view, np.uint8)).save(root / "samples_small" / f"{stem}.jpg")
-            if targets:
+            if targets or calibration:
                 (root / "samples_param_small" / f"{stem}.json").write_text(json.dumps({
                     "camera_intrinsic": [[300, 0, 180], [0, 310, 105], [0, 0, 1]]}))
+            if targets:
                 np.save(root / "samples_dpt_small" / f"{stem}.npy", np.linspace(1, 5, 224 * 400, dtype=np.float32).reshape(224, 400))
                 # Deliberately omit input mask assets: center masks must be all one.
                 if view:
@@ -75,6 +80,120 @@ def make_data(root, *, targets=True):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_known_camera_configs_only_change_geometry_contract(self):
+        for resolution in ("112x200", "224x400"):
+            cfg, raw = configuration(resolution, known=True)
+            old, original = configuration(resolution)
+            self.assertEqual(cfg.model.encoder.camera_source, "known")
+            self.assertTrue(cfg.dataset[0].omniscene.load_input_cameras)
+            self.assertEqual(cfg.test.camera_alignment, "known_input_frame")
+            for section in ("optimizer", "loss", "trainer", "data_loader", "checkpointing"):
+                self.assertEqual(OmegaConf.to_container(raw[section]), OmegaConf.to_container(original[section]))
+            encoder = OmegaConf.to_container(raw.model.encoder)
+            encoder.pop("camera_source")
+            self.assertEqual(encoder, OmegaConf.to_container(original.model.encoder))
+            self.assertNotEqual(raw.wandb.name, original.wandb.name)
+
+    def test_known_camera_training_requires_only_six_rgb_and_input_calibration(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            root = Path(tmp)
+            make_data(root, targets=False, calibration=True)
+            cfg = DatasetOmniSceneCfg("omniscene", [root], [112, 200], load_input_cameras=True)
+            for stage in ("train", "val"):
+                sample = DatasetOmniScene(cfg, stage)[0]
+                self.assertNotIn("target", sample)
+                self.assertNotIn("rel_depth", sample["context"])
+                self.assertEqual(sample["context"]["extrinsics"].shape, (6, 4, 4))
+                self.assertTrue(sample["context"]["masks"].eq(1).all())
+
+    def test_camera_gauge_and_reprojection_with_rotation_translation_and_crop(self):
+        c2w = torch.eye(4, dtype=torch.float64).repeat(2, 6, 1, 1)
+        angles = torch.arange(6, dtype=torch.float64) * math.pi / 3
+        c2w[:, :, 0, 0] = angles.cos()
+        c2w[:, :, 0, 1] = -angles.sin()
+        c2w[:, :, 1, 0] = angles.sin()
+        c2w[:, :, 1, 1] = angles.cos()
+        c2w[:, :, 0, 3] = 2 * angles.cos() + 7
+        c2w[:, :, 1, 3] = 3 * angles.sin() - 2
+        # Change the global basis and origin; normalized geometry must be invariant.
+        rigid = torch.eye(4, dtype=torch.float64)
+        rigid[:3, :3] = torch.tensor([[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]])
+        rigid[:3, 3] = torch.tensor([8., 2., -4.])
+        c2w[1] = rigid @ c2w[1]
+        c2w[1, :, :3, 3] *= 4
+        unchanged = c2w.clone()
+        normalized, gauge = normalize_input_cameras(c2w)
+        torch.testing.assert_close(normalized[:, 0], torch.eye(4).double().expand(2, -1, -1))
+        torch.testing.assert_close(normalized[0], normalized[1])
+        torch.testing.assert_close(apply_camera_normalization(c2w.repeat(1, 3, 1, 1), gauge)[:, 12:], normalized)
+        for height, width in ((112, 200), (224, 400)):
+            k = torch.tensor([[.7, 0, .43], [0, 1.3, .47], [0, 0, 1.]], dtype=torch.float64).repeat(2, 6, 1, 1)
+            cropped = crop_views({"image": torch.empty(2, 6, 3, height, width), "intrinsics": k})
+            h, w = cropped["image"].shape[-2:]
+            intr = pixel_intrinsics(cropped["intrinsics"], (h, w))
+            depths = torch.linspace(.5, 3., h*w).double().reshape(1, 1, h, w, 1).expand(2, 6, -1, -1, -1)
+            world = batchify_unproject_depth_map_to_point_map(depths, normalized.inverse()[..., :3, :], intr)
+            local = torch.einsum("bvij,bvhwj->bvhwi", normalized[..., :3, :3].transpose(-1, -2),
+                                 world - normalized[..., None, None, :3, 3])
+            pixels = torch.einsum("bvij,bvhwj->bvhwi", intr, local)
+            pixels = pixels[..., :2] / pixels[..., 2:]
+            y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
+            expected = torch.stack((x, y), dim=-1).double().expand(2, 6, -1, -1, -1)
+            torch.testing.assert_close(pixels, expected, atol=1e-10, rtol=1e-10)
+            torch.testing.assert_close(local[..., 2:], depths)
+        torch.testing.assert_close(c2w, unchanged)
+        expected_float, gauge_float = normalize_input_cameras(c2w.float())
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            actual_float = apply_camera_normalization(c2w.float(), gauge_float)
+        torch.testing.assert_close(actual_float, expected_float, atol=0, rtol=0)
+
+    def test_notification_false_return_is_reported_without_stopping_training(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            package = Path(tmp) / "auto_monitor"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            (package / "send_feishu.py").write_text("def send_feishu(subject, content):\n    return False\n")
+            cfg = SimpleNamespace(feishu_enabled=True, library_root=Path(tmp), timeout_seconds=5)
+            with self.assertLogs("src.misc.omniscene_runtime", level="WARNING") as logs:
+                notify_feishu(cfg, "offline test", "mock sender only")
+            self.assertIn("CalledProcessError", logs.output[0])
+
+    def test_checkpoint_modes_and_camera_gauge_cannot_be_mixed(self):
+        known, _ = configuration(known=True)
+        original, _ = configuration()
+        old_protocol = experiment_protocol(original)
+        old_protocol.pop("camera_source")
+        old_protocol.pop("camera_normalization")
+        state = {"omniscene_protocol": old_protocol, "omniscene_model_cfg": {"encoder": {}}}
+        validate_checkpoint_protocol(state, experiment_protocol(original))
+        with self.assertRaisesRegex(ValueError, "camera source differs"):
+            validate_checkpoint_protocol(state, experiment_protocol(known))
+        state = {"omniscene_protocol": experiment_protocol(known),
+                 "omniscene_model_cfg": {"encoder": {"camera_source": "known"}}}
+        validate_checkpoint_protocol(state, experiment_protocol(known))
+        with self.assertRaises(ValueError):
+            validate_checkpoint_protocol(state, experiment_protocol(original))
+        state["omniscene_protocol"]["camera_normalization"] = "different_gauge"
+        with self.assertRaises(ValueError):
+            validate_checkpoint_protocol(state, experiment_protocol(known))
+        known.test.weights_source = "author"
+        with self.assertRaisesRegex(ValueError, "original RGB-only"):
+            load_evaluation_model(known)
+
+    def test_depth_diagnostics_distinguish_head_constant_from_empty_render(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            head = torch.arange(24).reshape(1, 2, 3, 4, 1).float()
+            head[:, 0] = 9
+            rgb = torch.zeros(1, 2, 3, 3, 4)
+            encoded = SimpleNamespace(depth_dict={"depth": head})
+            rendered = SimpleNamespace(color=rgb, depth=torch.zeros(1, 2, 3, 4), alpha=torch.zeros(1, 2, 3, 4))
+            save_reconstruction_diagnostics(tmp, rgb, encoded, rendered)
+            stats = json.loads((Path(tmp)/"statistics.json").read_text())
+            self.assertTrue(stats["depth_head"][0]["is_constant"])
+            self.assertFalse(stats["depth_head"][1]["is_constant"])
+            self.assertTrue(all(v["all_zero"] for v in stats["alpha"]))
+            np.testing.assert_array_equal(np.load(Path(tmp)/"depth_head.npy"), head[0, ..., 0].numpy())
+
     def test_two_resolved_configurations(self):
         for resolution, shape in (("112x200", [112, 200]), ("224x400", [224, 400])):
             cfg, raw = configuration(resolution)

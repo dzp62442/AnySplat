@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - omniscene_common
+  - _self_
+model:
+  encoder:
+    camera_source: known
+dataset:
+  omniscene:
+    load_input_cameras: true
+test:
+  camera_alignment: known_input_frame

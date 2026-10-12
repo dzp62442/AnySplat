@@ -129,7 +129,7 @@ def notify_feishu(cfg, subject, content):
     script = (
         "import sys; sys.path.insert(0, sys.argv[1]); "
         "from auto_monitor.send_feishu import send_feishu; "
-        "send_feishu(sys.argv[2], sys.argv[3])"
+        "sys.exit(0 if send_feishu(sys.argv[2], sys.argv[3]) else 1)"
     )
     try:
         subprocess.run([sys.executable, "-B", "-c", script, str(cfg.library_root), subject, content],

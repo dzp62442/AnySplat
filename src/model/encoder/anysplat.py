@@ -118,6 +118,7 @@ class EncoderAnySplatCfg:
     vggt_pretrained_path: str = "facebook/VGGT-1B"
     local_files_only: bool = False
     verbose: bool = True
+    camera_source: Literal["predicted", "known"] = "predicted"
 
 
 def rearrange_head(feat, patch_size, H, W):
@@ -337,9 +338,22 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
         image: torch.Tensor,
         global_step: int = 0,
         visualization_dump: Optional[dict] = None,
+        context_cameras: Optional[dict] = None,
     ) -> Gaussians:
         device = image.device
         b, v, _, h, w = image.shape
+        construction_pose, camera_transform = None, None
+        if self.cfg.camera_source == "known":
+            if context_cameras is None or self.cfg.pred_head_type != "depth":
+                raise ValueError("Known-camera reconstruction requires input calibration and the depth head")
+            from ...geometry.omniscene_cameras import normalize_input_cameras, pixel_intrinsics
+            known_c2w, camera_transform = normalize_input_cameras(context_cameras["extrinsics"])
+            known_intrinsic = context_cameras["intrinsics"]
+            construction_pose = dict(extrinsic=known_c2w, intrinsic=known_intrinsic)
+            known_w2c = known_c2w.inverse()[..., :3, :]
+            known_pixel_intrinsic = pixel_intrinsics(known_intrinsic, (h, w))
+        elif context_cameras is not None:
+            raise ValueError("Input calibration is only accepted by the explicit known-camera mode")
         distill_infos = {}
         if self.distill:
             distill_image = image.clone().detach()
@@ -434,7 +448,9 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
                     patch_start_idx=patch_start_idx,
                 )
                 pts_all = batchify_unproject_depth_map_to_point_map(
-                    depth_map, extrinsic, intrinsic
+                    depth_map,
+                    known_w2c if construction_pose is not None else extrinsic,
+                    known_pixel_intrinsic if construction_pose is not None else intrinsic,
                 )
             else:
                 raise ValueError(f"Invalid pred_head_type: {self.cfg.pred_head_type}")
@@ -578,6 +594,8 @@ class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
             depth_dict=dict(depth=depth_map, conf_valid_mask=conf_valid_mask),
             infos=infos,
             distill_infos=distill_infos,
+            construction_pose=construction_pose,
+            camera_transform=camera_transform,
         )
 
     @staticmethod

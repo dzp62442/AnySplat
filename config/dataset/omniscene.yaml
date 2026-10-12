@@ -6,4 +6,5 @@ input_image_shape: [112, 200]
 num_context_views: 6
 load_metric_depth: false
 load_dynamic_mask: true
+load_input_cameras: false
 patch_size: 14

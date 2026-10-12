@@ -2,17 +2,21 @@
 
 在 `anysplat` 环境中，从项目根目录运行。数据根目录为 `datasets/omniscene`，详细设置见 [OmniScene 数据集实验文档](<docs/OmniScene 数据集实验文档.md>)。
 
-### 训练
+### 训练（已知输入相机）
+
+当前对比方案使用 6 路 RGB 和对应内外参构建高斯，仍只监督输入 6 路；不使用外部深度或新视角 RGB 训练。网络结构、损失和学习率沿用原配置。
 
 ```bash
 # 112×200
-CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_112x200
+CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_knowncam_112x200
 
 # 224×400
-CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_224x400
+CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_knowncam_224x400
 ```
 
-默认训练 100001 步，batch size 为 1，W&B 离线。结果保存在 `work_dirs/<实验名>`，重复执行相同命令会自动续训。
+默认训练 100001 步，batch size 为 1，W&B 离线。每 1000 步对 10 个样本做 val 并保存 RGB、深度和 alpha；每 10 次 val 评估 mini，结束时再评估一次 mini。结果保存在 `work_dirs/<实验名>`，重复执行相同命令会自动续训。新配置使用独立目录，不接续旧 RGB-only 实验。
+
+原 RGB-only 配置 `omniscene_112x200` / `omniscene_224x400` 继续保留。飞书推送依赖 `python-dotenv`，已加入 `requirements.txt`。
 
 ### 评估
 
@@ -21,11 +25,11 @@ CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=omniscene_224x400
 ```bash
 # 自训模型：完整测试集
 CUDA_VISIBLE_DEVICES=0 python -m src.main \
-  +experiment=omniscene_112x200 mode=test test.split=total \
-  checkpointing.load=work_dirs/omniscene_112x200/checkpoints/final.ckpt \
-  hydra.run.dir=work_dirs/omniscene_112x200/eval/total
+  +experiment=omniscene_knowncam_112x200 mode=test test.split=total \
+  checkpointing.load=work_dirs/omniscene_knowncam_112x200/checkpoints/final.ckpt \
+  hydra.run.dir=work_dirs/omniscene_knowncam_112x200/eval/total
 
-# 作者预训练模型：直接评估，无需 OmniScene 训练
+# 作者预训练模型：沿用原 RGB-only 路径直接评估
 CUDA_VISIBLE_DEVICES=0 python -m src.main \
   +experiment=omniscene_112x200 mode=test test.split=total \
   test.weights_source=author test.pretrained_path=pretrained \

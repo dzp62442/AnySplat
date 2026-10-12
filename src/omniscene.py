@@ -16,6 +16,7 @@ from safetensors.torch import load_model
 from .config import ModelCfg, load_typed_config
 from .dataset.omniscene_data_module import OmniSceneDataModule
 from .evaluation.omniscene import evaluate_omniscene
+from .geometry.omniscene_cameras import CAMERA_NORMALIZATION
 from .loss import get_losses
 from .misc.omniscene_callbacks import OmniSceneProgress
 from .misc.omniscene_runtime import AtomicCheckpointIO, resolve_resume, write_json
@@ -29,8 +30,34 @@ def model_config(value):
     return load_typed_config(DictConfig(value), ModelCfg, {tuple[float, float, float]: tuple})
 
 
+def experiment_protocol(cfg):
+    dataset = cfg.dataset[0].omniscene
+    source = cfg.model.encoder.camera_source
+    return {"dataset_root": str(Path(dataset.roots[0]).resolve()),
+            "data_version": dataset.data_version,
+            "input_image_shape": dataset.input_image_shape, "patch_size": dataset.patch_size,
+            "num_context_views": 6, "supervision_views": "context", "camera_source": source,
+            "camera_normalization": CAMERA_NORMALIZATION if source == "known" else None}
+
+
+def validate_checkpoint_protocol(state, expected):
+    source = state.get("omniscene_model_cfg", {}).get("encoder", {}).get("camera_source", "predicted")
+    if source != expected["camera_source"]:
+        raise ValueError("Checkpoint camera source differs; do not mix RGB-only and known-camera experiments")
+    saved = state.get("omniscene_protocol")
+    if saved is None:
+        if source == "known":
+            raise ValueError("Known-camera checkpoints must record their camera normalization protocol")
+        return  # Compatibility with the original RGB-only checkpoint format.
+    saved = {"camera_source": "predicted", "camera_normalization": None, **saved}
+    if saved != expected:
+        raise ValueError("Checkpoint belongs to a different OmniScene experiment; use its matching configuration")
+
+
 def load_evaluation_model(cfg, checkpoint_state=None):
     if cfg.test.weights_source == "author":
+        if cfg.model.encoder.camera_source != "predicted":
+            raise ValueError("Author weights use the original RGB-only experiment, not omniscene_knowncam_*")
         directory = Path(cfg.test.pretrained_path)
         with (directory / "config.json").open() as f:
             raw = json.load(f)
@@ -44,7 +71,8 @@ def load_evaluation_model(cfg, checkpoint_state=None):
         if checkpoint_state is None:
             if not cfg.checkpointing.load:
                 raise ValueError("Training-model evaluation requires checkpointing.load=<complete .ckpt>")
-            checkpoint_state = torch.load(cfg.checkpointing.load, map_location="cpu", mmap=True, weights_only=False)
+            checkpoint_state = torch.load(str(cfg.checkpointing.load), map_location="cpu", mmap=True, weights_only=False)
+        validate_checkpoint_protocol(checkpoint_state, experiment_protocol(cfg))
         model_cfg = model_config(checkpoint_state.get("omniscene_model_cfg", asdict(cfg.model)))
         model_cfg.encoder = replace(model_cfg.encoder, initialize_from_vggt=False, distill=False, verbose=False)
         model = get_model(model_cfg.encoder, model_cfg.decoder)
@@ -77,9 +105,15 @@ def run_omniscene(cfg, cfg_dict, output_dir):
     if cfg.trainer.devices != 1 or cfg.trainer.num_nodes != 1 or cfg.trainer.accumulate_grad_batches != 1:
         raise ValueError("The approved batch=1 protocol uses one GPU, one node, no accumulation")
     if dataset_cfg.load_metric_depth or cfg.train.supervision_views != "context":
-        raise ValueError("This experiment uses RGB-only reconstruction and context-only supervision")
-    if cfg.test.align_pose or cfg.test.camera_alignment != "input_sim3":
-        raise ValueError("Use input_sim3; test-image pose optimization is disabled")
+        raise ValueError("OmniScene uses no external depth labels and only context-view supervision")
+    source = cfg.model.encoder.camera_source
+    expected_alignment = "known_input_frame" if source == "known" else "input_sim3"
+    if dataset_cfg.load_input_cameras != (source == "known"):
+        raise ValueError("load_input_cameras must match the reconstruction camera_source")
+    if source == "known" and cfg.model.encoder.pred_head_type != "depth":
+        raise ValueError("The known-camera experiment uses the original depth head")
+    if cfg.test.align_pose or cfg.test.camera_alignment != expected_alignment:
+        raise ValueError(f"Use camera_alignment={expected_alignment}; test-image pose optimization is disabled")
     if not {"all_18", "novel_12"}.issubset(cfg.test.view_groups) or not set(cfg.test.view_groups).issubset({"all_18", "novel_12", "input_6"}):
         raise ValueError("Evaluation must include all_18 and novel_12; input_6 is optional")
     if cfg.wandb["mode"] not in ("offline", "disabled"):
@@ -94,12 +128,9 @@ def run_omniscene(cfg, cfg_dict, output_dir):
     checkpoint_path, checkpoint_state = (None, None)
     if cfg.mode == "train":
         checkpoint_path, checkpoint_state = resolve_resume(output_dir / "checkpoints", cfg.checkpointing.load, cfg.checkpointing.auto_resume)
-    protocol = {"dataset_root": str(Path(dataset_cfg.roots[0]).resolve()),
-                "data_version": dataset_cfg.data_version,
-                "input_image_shape": dataset_cfg.input_image_shape, "patch_size": dataset_cfg.patch_size,
-                "num_context_views": 6, "supervision_views": "context"}
-    if checkpoint_state is not None and checkpoint_state.get("omniscene_protocol") not in (None, protocol):
-        raise ValueError("Checkpoint belongs to a different OmniScene experiment; use its matching work directory/configuration")
+    protocol = experiment_protocol(cfg)
+    if checkpoint_state is not None:
+        validate_checkpoint_protocol(checkpoint_state, protocol)
     start_step = int(checkpoint_state["global_step"]) if checkpoint_state is not None else 0
     state_path = output_dir / "run_state.json"
     if cfg.mode == "train" and start_step >= cfg.trainer.max_steps and state_path.is_file():
@@ -118,6 +149,8 @@ def run_omniscene(cfg, cfg_dict, output_dir):
                 "effective_resolution": [x // dataset_cfg.patch_size * dataset_cfg.patch_size for x in dataset_cfg.input_image_shape],
                 "dataset_root": str(dataset_cfg.roots[0]), "input_views": 6,
                 "supervision_views": "context", "camera_alignment": cfg.test.camera_alignment,
+                "camera_source": source, "camera_normalization": protocol["camera_normalization"],
+                "reconstruction_inputs": ["rgb", "input_intrinsics", "input_c2w"] if source == "known" else ["rgb"],
                 "precision": cfg.trainer.precision}
     data_module = OmniSceneDataModule(dataset_cfg, cfg.data_loader, cfg.test, start_step)
     if cfg.mode == "test":

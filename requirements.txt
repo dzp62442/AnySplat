@@ -35,5 +35,6 @@ pydantic
 open3d
 einops
 safetensors
+python-dotenv>=1.0.1
 git+https://github.com/facebookresearch/pytorch3d.git
 https://github.com/nerfstudio-project/gsplat/releases/download/v1.4.0/gsplat-1.4.0+pt22cu118-cp310-cp310-linux_x86_64.whl
